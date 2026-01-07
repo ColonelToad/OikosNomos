@@ -4,6 +4,7 @@ from typing import List, Optional
 import logging
 from datetime import datetime, timedelta
 import numpy as np
+import pandas as pd
 
 from database import Database
 from model import ForecastModel
@@ -18,6 +19,40 @@ app = FastAPI(title="OikosNomos Forecast Service", version="1.0.0")
 # Global instances
 db = Database(settings)
 model = ForecastModel()
+
+# --- Billing endpoint ---
+from fastapi import Query
+
+@app.get("/billing/current")
+async def billing_current(home_id: str = Query(..., description="Home ID")):
+    """Return current bill and summary for a home."""
+    try:
+        # Get all consumption for this month
+        now = datetime.now()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        query = """
+            SELECT SUM(total_kwh) as kwh
+            FROM hourly_consumption
+            WHERE home_id = %s AND hour >= %s AND hour < %s
+        """
+        with db.conn.cursor() as cur:
+            cur.execute(query, (home_id, month_start, now))
+            row = cur.fetchone()
+            kwh = row["kwh"] if row and row["kwh"] is not None else 0.0
+        tariff = db.get_active_tariff(home_id)
+        current_bill = kwh * tariff["base_rate"]
+        return {
+            "home_id": home_id,
+            "current_bill": round(current_bill, 2),
+            "kwh": round(kwh, 2),
+            "tariff_name": tariff["name"],
+            "rate": tariff["base_rate"],
+            "period_start": month_start.isoformat(),
+            "period_end": now.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Billing error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")
 async def startup_event():
@@ -136,9 +171,22 @@ async def train_model():
     try:
         logger.info("Starting model training...")
         
-        # Get historical data for training (use last 90 days)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=90)
+        # Get the most recent data available (not hardcoded to last 90 days)
+        # First check what data we have
+        check_query = "SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts FROM raw_readings"
+        date_range = pd.read_sql_query(check_query, db.engine)
+        
+        if date_range.empty or pd.isna(date_range['max_ts'].iloc[0]):
+            raise HTTPException(
+                status_code=404,
+                detail="No training data available in database"
+            )
+        
+        # Use the most recent year of data for training, or all if less than a year
+        end_date = pd.to_datetime(date_range['max_ts'].iloc[0])
+        start_date = max(pd.to_datetime(date_range['min_ts'].iloc[0]), end_date - timedelta(days=365))
+        
+        logger.info(f"Training on data from {start_date} to {end_date}")
         
         train_data = db.get_historical_data(
             start_date=start_date.strftime("%Y-%m-%d"),
@@ -148,7 +196,7 @@ async def train_model():
         if train_data.empty:
             raise HTTPException(
                 status_code=404,
-                detail="No training data available in the last 90 days"
+                detail=f"No training data available between {start_date} and {end_date}"
             )
         
         # Get weather data

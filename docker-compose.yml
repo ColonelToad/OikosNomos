@@ -11,9 +11,14 @@ services:
       - mosquitto_logs:/mosquitto/log
     networks:
       - oikosnomo
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "localhost", "-t", "test", "-m", "1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   timescaledb:
-    image: timescale/timescaledb:latest-pg14
+    image: timescale/timescaledb:latest-pg15
     container_name: oikosnomo_db
     environment:
       POSTGRES_USER: postgres
@@ -31,29 +36,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  billing-engine:
-    build:
-      context: ./billing-engine
-      dockerfile: Dockerfile
-    container_name: oikosnomo_billing
-    ports:
-      - "8080:8080"
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      mosquitto:
-        condition: service_started
-    environment:
-      MQTT_BROKER: mosquitto:1883
-      DB_HOST: timescaledb
-      DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: oikosnomo_dev
-      DB_NAME: oikosnomo
-    networks:
-      - oikosnomo
-    restart: unless-stopped
 
   forecast-service:
     build:
@@ -105,18 +87,39 @@ services:
     ports:
       - "8003:8000"
     depends_on:
-      - forecast-service
-      - scenario-service
+      timescaledb:
+        condition: service_healthy
     environment:
-      FORECAST_SERVICE_URL: http://forecast-service:8000
-      SCENARIO_SERVICE_URL: http://scenario-service:8000
-      BILLING_ENGINE_URL: http://billing-engine:8080
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: oikosnomo_dev
+      DB_NAME: oikosnomo
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - ./docs:/app/docs
       - ./rag-service/chroma_data:/app/chroma_data
     networks:
       - oikosnomo
+    restart: unless-stopped
+
+  simulator:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    container_name: oikosnomo_simulator
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      DURATION_HOURS: "8"
+      HOME_ID: "home_001"
+      BROKER_HOST: mosquitto
+      BROKER_PORT: "1883"
+    networks:
+      - oikosnomo
+    profiles:
+      - dev
     restart: unless-stopped
 
 volumes:

@@ -135,12 +135,13 @@ def load_historical_data(csv_path, db_config, home_id="home_001"):
         conn.commit()
         print(f"✓ Inserted {weather_inserted} weather records")
     
-    # Refresh continuous aggregates
+    # Refresh continuous aggregates (must be outside of transaction block)
     print("\nRefreshing continuous aggregates...")
+    conn.set_isolation_level(0)  # Autocommit mode
     cur.execute("CALL refresh_continuous_aggregate('hourly_consumption', NULL, NULL);")
     cur.execute("CALL refresh_continuous_aggregate('daily_consumption', NULL, NULL);")
-    conn.commit()
     print("✓ Aggregates refreshed")
+    conn.set_isolation_level(1)  # Return to normal mode
     
     # Close connection
     cur.close()

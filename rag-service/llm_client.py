@@ -21,6 +21,12 @@ class LLMClient:
         elif self.provider == "anthropic":
             from anthropic import Anthropic
             self.client = Anthropic(api_key=settings.anthropic_api_key)
+        elif self.provider == "groq":
+            try:
+                from groq import Groq
+            except ImportError:
+                raise ImportError("groq Python package is not installed. Please add it to requirements.txt.")
+            self.client = Groq(api_key=settings.groq_api_key)
         else:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
     
@@ -60,6 +66,24 @@ class LLMClient:
                 return self._generate_openai(user_prompt)
             elif self.provider == "anthropic":
                 return self._generate_anthropic(user_prompt)
+            elif self.provider == "groq":
+                return self._generate_groq(user_prompt)
+                def _generate_groq(self, user_prompt: str) -> str:
+                    """Generate answer using Groq"""
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {"role": "system", "content": self._get_system_prompt()},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            temperature=0.7,
+                            max_tokens=500
+                        )
+                        return response.choices[0].message.content
+                    except Exception as e:
+                        logger.error(f"Groq API error: {e}")
+                        raise
             
         except Exception as e:
             logger.error(f"Error generating answer: {e}")
