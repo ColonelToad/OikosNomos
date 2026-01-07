@@ -1,9 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 import logging
 from datetime import datetime, timedelta
-import numpy as np
 import pandas as pd
 
 from database import Database
@@ -20,39 +19,6 @@ app = FastAPI(title="OikosNomos Forecast Service", version="1.0.0")
 db = Database(settings)
 model = ForecastModel()
 
-# --- Billing endpoint ---
-from fastapi import Query
-
-@app.get("/billing/current")
-async def billing_current(home_id: str = Query(..., description="Home ID")):
-    """Return current bill and summary for a home."""
-    try:
-        # Get all consumption for this month
-        now = datetime.now()
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        query = """
-            SELECT SUM(total_kwh) as kwh
-            FROM hourly_consumption
-            WHERE home_id = %s AND hour >= %s AND hour < %s
-        """
-        with db.conn.cursor() as cur:
-            cur.execute(query, (home_id, month_start, now))
-            row = cur.fetchone()
-            kwh = row["kwh"] if row and row["kwh"] is not None else 0.0
-        tariff = db.get_active_tariff(home_id)
-        current_bill = kwh * tariff["base_rate"]
-        return {
-            "home_id": home_id,
-            "current_bill": round(current_bill, 2),
-            "kwh": round(kwh, 2),
-            "tariff_name": tariff["name"],
-            "rate": tariff["base_rate"],
-            "period_start": month_start.isoformat(),
-            "period_end": now.isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Billing error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")
 async def startup_event():
@@ -70,15 +36,18 @@ async def startup_event():
         logger.error(f"Startup error: {e}")
         raise
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     db.close()
     logger.info("Database connection closed")
 
+
 class PredictRequest(BaseModel):
     home_id: str = "home_001"
     horizon_hours: int = 3
+
 
 class PredictResponse(BaseModel):
     home_id: str
@@ -86,6 +55,7 @@ class PredictResponse(BaseModel):
     forecast_kwh: List[float]
     forecast_cost: List[float]
     model_version: str
+
 
 @app.get("/")
 async def root():
@@ -96,6 +66,7 @@ async def root():
         "version": "1.0.0"
     }
 
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
@@ -104,6 +75,43 @@ async def health():
         "model_loaded": model.is_loaded(),
         "db_connected": db.is_connected()
     }
+
+
+@app.get("/billing/current")
+async def billing_current(home_id: str = Query(..., description="Home ID")):
+    """Return current bill and summary for a home."""
+    try:
+        logger.info(f"Fetching billing for home_id={home_id}")
+        now = datetime.now()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        query = """
+            SELECT SUM(total_kwh) as kwh
+            FROM hourly_consumption
+            WHERE home_id = %s AND hour >= %s AND hour < %s
+        """
+        
+        with db.conn.cursor() as cur:
+            cur.execute(query, (home_id, month_start, now))
+            row = cur.fetchone()
+            kwh = row["kwh"] if row and row["kwh"] is not None else 0.0
+        
+        tariff = db.get_active_tariff(home_id)
+        current_bill = kwh * tariff["base_rate"]
+        
+        return {
+            "home_id": home_id,
+            "current_bill": round(current_bill, 2),
+            "kwh": round(kwh, 2),
+            "tariff_name": tariff["name"],
+            "rate": tariff["base_rate"],
+            "period_start": month_start.isoformat(),
+            "period_end": now.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Billing error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(request: PredictRequest):
@@ -160,6 +168,7 @@ async def predict(request: PredictRequest):
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/train")
 async def train_model():
     """
@@ -171,8 +180,7 @@ async def train_model():
     try:
         logger.info("Starting model training...")
         
-        # Get the most recent data available (not hardcoded to last 90 days)
-        # First check what data we have
+        # Check what data we have
         check_query = "SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts FROM raw_readings"
         date_range = pd.read_sql_query(check_query, db.engine)
         
@@ -182,12 +190,10 @@ async def train_model():
                 detail="No training data available in database"
             )
         
-        # Use the most recent year of data for training, or all if less than a year
+        # Use all available data for training
+        start_date = pd.to_datetime(date_range['min_ts'].iloc[0])
         end_date = pd.to_datetime(date_range['max_ts'].iloc[0])
-        start_date = max(pd.to_datetime(date_range['min_ts'].iloc[0]), end_date - timedelta(days=365))
-        
-        logger.info(f"Training on data from {start_date} to {end_date}")
-        
+        logger.info(f"Training on ALL available data from {start_date} to {end_date}")
         train_data = db.get_historical_data(
             start_date=start_date.strftime("%Y-%m-%d"),
             end_date=end_date.strftime("%Y-%m-%d")
@@ -205,42 +211,33 @@ async def train_model():
             end_date=end_date.strftime("%Y-%m-%d")
         )
         
-        # Train model
+        # Train the model
         metrics = model.train(train_data, weather_data)
         
-        # Save model
+        # Save the trained model
         model.save()
         
-        logger.info(f"Model training complete: {metrics}")
+        logger.info("Model training completed successfully")
         
         return {
             "status": "success",
+            "message": "Model trained successfully",
             "metrics": metrics,
-            "model_version": model.version,
-            "trained_at": datetime.now().isoformat()
+            "training_period": {
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat()
+            },
+            "data_points": len(train_data)
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
         logger.error(f"Training error: {e}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/model/info")
-async def model_info():
-    """Get information about the current model"""
-    if not model.is_loaded():
-        return {"status": "no_model_loaded"}
-    
-    return {
-        "model_version": model.version,
-        "model_type": "LightGBM",
-        "features": model.get_feature_names(),
-        "trained_at": model.trained_at,
-        "metrics": model.metrics
-    }
 
+# Only run server if executed directly
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

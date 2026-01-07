@@ -4,8 +4,7 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    # OpenAI
-    openai_api_key: str = ""
+    # OpenAI (removed)
 
     # Anthropic (optional)
     anthropic_api_key: str = ""
@@ -13,8 +12,8 @@ class Settings(BaseSettings):
     # Groq (optional)
     groq_api_key: str = ""
 
-    # LLM Provider: "openai", "anthropic", or "groq"
-    llm_provider: str = "openai"
+    # LLM Provider: "groq" (default)
+    llm_provider: str = "groq"
 
     # Model names
     llm_model: str = "gpt-4o-mini"

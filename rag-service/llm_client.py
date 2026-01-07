@@ -16,8 +16,7 @@ class LLMClient:
         
         # Initialize client based on provider
         if self.provider == "openai":
-            from openai import OpenAI
-            self.client = OpenAI(api_key=settings.openai_api_key)
+            raise ValueError("OpenAI provider is not supported in this deployment.")
         elif self.provider == "anthropic":
             from anthropic import Anthropic
             self.client = Anthropic(api_key=settings.anthropic_api_key)

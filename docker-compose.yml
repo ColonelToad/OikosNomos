@@ -95,7 +95,7 @@ services:
       DB_USER: postgres
       DB_PASSWORD: oikosnomo_dev
       DB_NAME: oikosnomo
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # OPENAI_API_KEY removed (Groq is used)
     volumes:
       - ./docs:/app/docs
       - ./rag-service/chroma_data:/app/chroma_data

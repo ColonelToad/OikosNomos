@@ -1,0 +1,34 @@
+== Info: Host localhost:8001 was resolved.
+== Info: IPv6: ::1
+== Info: IPv4: 127.0.0.1
+== Info:   Trying [::1]:8001...
+== Info: Established connection to localhost (::1 port 8001) from ::1 port 54232 
+== Info: using HTTP/1.x
+=> Send header, 137 bytes (0x89)
+0000: POST /predict HTTP/1.1
+0018: Host: localhost:8001
+002e: User-Agent: curl/8.16.0
+0047: Accept: */*
+0054: Content-Type: application/json
+0074: Content-Length: 2
+0087: 
+=> Send data, 2 bytes (0x2)
+0000: {\
+== Info: upload completely sent off: 2 bytes
+<= Recv header, 35 bytes (0x23)
+0000: HTTP/1.1 422 Unprocessable Entity
+<= Recv header, 37 bytes (0x25)
+0000: date: Wed, 07 Jan 2026 16:26:13 GMT
+<= Recv header, 17 bytes (0x11)
+0000: server: uvicorn
+<= Recv header, 21 bytes (0x15)
+0000: content-length: 158
+<= Recv header, 32 bytes (0x20)
+0000: content-type: application/json
+<= Recv header, 2 bytes (0x2)
+0000: 
+<= Recv data, 158 bytes (0x9e)
+0000: {"detail":[{"type":"json_invalid","loc":["body",1],"msg":"JSON d
+0040: ecode error","input":{},"ctx":{"error":"Expecting property name 
+0080: enclosed in double quotes"}}]}
+== Info: Connection #0 to host localhost:8001 left intact

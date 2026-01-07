@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import lightgbm as lgb
 import joblib
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -137,27 +136,15 @@ class ForecastModel:
         X_val = val_df[self.feature_names]
         y_val = val_df['total_kwh'] if 'total_kwh' in val_df.columns else val_df['avg_power_w'] / 1000
         
-        # Train LightGBM model
-        params = {
-            'objective': 'regression',
-            'metric': 'rmse',
-            'boosting_type': 'gbdt',
-            'num_leaves': 31,
-            'learning_rate': 0.05,
-            'feature_fraction': 0.9,
-            'verbose': -1
-        }
-        
-        train_set = lgb.Dataset(X_train, label=y_train)
-        val_set = lgb.Dataset(X_val, label=y_val, reference=train_set)
-        
-        self.model = lgb.train(
-            params,
-            train_set,
-            num_boost_round=200,
-            valid_sets=[train_set, val_set],
-            callbacks=[lgb.early_stopping(stopping_rounds=20)]
+        # Train RandomForestRegressor model (scikit-learn)
+        from sklearn.ensemble import RandomForestRegressor
+        self.model = RandomForestRegressor(
+            n_estimators=100,
+            max_depth=10,
+            random_state=42,
+            n_jobs=-1
         )
+        self.model.fit(X_train, y_train)
         
         # Calculate metrics
         y_pred = self.model.predict(X_val)
