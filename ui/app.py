@@ -6,12 +6,17 @@ import requests
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
+import random
+import numpy as np
+
 
 st.set_page_config(page_title="OikosNomos Dashboard", layout="wide", initial_sidebar_state="expanded")
+
 
 API_BASE = "http://localhost:8001"
 SCENARIO_API = "http://localhost:8002"
 RAG_API = "http://localhost:8003"
+
 
 # Demo mode: when True the UI will use bundled sample CSVs instead of calling backends.
 _demo_env = os.getenv("DEMO_MODE")
@@ -25,10 +30,12 @@ try:
 except Exception:
     _demo_secret = None
 
+
 _demo_val = _demo_env or _demo_secret or "false"
 DEMO_MODE = str(_demo_val).lower() in ("1", "true", "yes")
 REPO_ROOT = Path(__file__).parent.parent
 DATA_DIR = REPO_ROOT / "data" / "processed"
+
 
 # Per-home UI defaults used when backend/demo data is unavailable
 DEFAULTS = {
@@ -54,6 +61,47 @@ DEFAULTS = {
     }
 }
 
+
+def generate_varied_data(home_id, base_defaults):
+    """Generate realistic varied data per home."""
+    random.seed(hash(home_id) % (2**32))  # Consistent seed per home
+    np.random.seed(hash(home_id) % (2**32))
+    
+    # Vary billing by home
+    base_bill = base_defaults.get("current_bill", 2.50)
+    varied_bill = base_bill * random.uniform(0.7, 1.5)
+    
+    # Generate realistic hourly forecast with home-specific patterns
+    base_consumption = random.uniform(0.3, 1.2)
+    hourly_pattern = []
+    for hour in range(24):
+        # Morning peak (6-9 AM)
+        if 6 <= hour <= 9:
+            hourly_pattern.append(base_consumption * random.uniform(1.2, 1.8))
+        # Evening peak (5-10 PM)
+        elif 17 <= hour <= 22:
+            hourly_pattern.append(base_consumption * random.uniform(1.3, 2.0))
+        # Night (11 PM - 5 AM)
+        elif hour >= 23 or hour <= 5:
+            hourly_pattern.append(base_consumption * random.uniform(0.3, 0.6))
+        # Daytime (10 AM - 4 PM)
+        else:
+            hourly_pattern.append(base_consumption * random.uniform(0.8, 1.2))
+    
+    # Add random noise
+    hourly_pattern = [max(0.1, val + np.random.normal(0, 0.1)) for val in hourly_pattern]
+    
+    return {
+        "current_bill": round(varied_bill, 2),
+        "forecast_kwh": [round(val, 2) for val in hourly_pattern]
+    }
+
+
+# Update DEFAULTS with varied data
+for home_key in DEFAULTS.keys():
+    DEFAULTS[home_key] = generate_varied_data(home_key, DEFAULTS[home_key])
+
+
 class DemoResponse:
     def __init__(self, data, status_code=200):
         self._data = data
@@ -63,8 +111,10 @@ class DemoResponse:
         except Exception:
             self.text = str(data)
 
+
     def json(self):
         return self._data
+
 
 def _load_sample_series():
     # Load a sample consumption series from the provided CSVs
@@ -78,9 +128,17 @@ def _load_sample_series():
             continue
     return None
 
+
 _SAMPLE_DF = _load_sample_series()
 
-def _demo_forecast(horizon_hours=24):
+
+def _demo_forecast(horizon_hours=24, home_id=None):
+    if home_id and DEFAULTS.get(home_id):
+        vals = DEFAULTS[home_id]["forecast_kwh"][:horizon_hours]
+        start_time = datetime.utcnow().isoformat()
+        return {"forecast_kwh": vals, "timestamp": start_time}
+    
+    # Fallback logic
     if _SAMPLE_DF is None:
         vals = [0.5] * horizon_hours
         start_time = datetime.utcnow().isoformat()
@@ -92,19 +150,17 @@ def _demo_forecast(horizon_hours=24):
         start_time = _SAMPLE_DF["timestamp"].iloc[0].isoformat()
     return {"forecast_kwh": vals, "timestamp": start_time}
 
+
 def _demo_billing(home_id):
-    # Simple demo billing: sum of next 24h * rate
-        # Prefer per-home default billing when available; otherwise compute from sample forecast
-        if home_id and DEFAULTS.get(home_id) and DEFAULTS[home_id].get("current_bill") is not None:
-            return {"current_bill": DEFAULTS[home_id]["current_bill"]}
-        fc = _demo_forecast(24)["forecast_kwh"]
-        rate = 0.20
-        bill = sum(fc) * rate
-        return {"current_bill": round(bill, 2)}
+    if home_id and DEFAULTS.get(home_id):
+        return {"current_bill": DEFAULTS[home_id]["current_bill"]}
+    return {"current_bill": 2.50}
+
 
 def _demo_scenario_evaluate(payload):
     # payload expected to contain device_mix and home_id
-    fc = _demo_forecast(24)["forecast_kwh"]
+    home_id = payload.get("home_id")
+    fc = _demo_forecast(24, home_id)["forecast_kwh"]
     daily_cost = sum(fc) * 0.20
     monthly_cost = daily_cost * 30
     return {
@@ -114,29 +170,28 @@ def _demo_scenario_evaluate(payload):
         "devices_active": payload.get("device_mix", {}),
     }
 
+
 def _demo_rag_query(payload):
     return {"answer": "This is a demo answer — deploy backends for live results.", "citations": []}
+
 
 def api_get(url, params=None, timeout=5):
     if DEMO_MODE:
         if url.endswith("/health"):
             return DemoResponse({"model_loaded": True, "db_connected": True})
         if "/billing/current" in url:
-            return DemoResponse(_demo_billing(None))
+            home_id = (params or {}).get("home_id")
+            return DemoResponse(_demo_billing(home_id))
         return DemoResponse({})
     return requests.get(url, params=params, timeout=timeout)
+
 
 def api_post(url, json=None, timeout=10):
     if DEMO_MODE:
         if url.endswith("/predict"):
             horizon = (json or {}).get("horizon_hours", 24)
             home_id = (json or {}).get("home_id")
-            # Use per-home defaults if present to provide distinct demo data per house
-            if home_id and DEFAULTS.get(home_id) and DEFAULTS[home_id].get("forecast_kwh"):
-                vals = DEFAULTS[home_id]["forecast_kwh"]
-                start_time = datetime.utcnow().isoformat()
-                return DemoResponse({"forecast_kwh": vals[:horizon], "timestamp": start_time})
-            return DemoResponse(_demo_forecast(horizon))
+            return DemoResponse(_demo_forecast(horizon, home_id))
         if url.endswith("/train"):
             return DemoResponse({"metrics": {"rmse": 0.5, "mae": 0.3, "mape": 5.2}})
         if "/scenario/evaluate" in url:
@@ -146,13 +201,16 @@ def api_post(url, json=None, timeout=10):
         return DemoResponse({})
     return requests.post(url, json=json, timeout=timeout)
 
+
 # Initialize session state for theme toggle
 if 'dark_mode' not in st.session_state:
     st.session_state.dark_mode = True
 
+
 # Theme toggle function
 def toggle_theme():
     st.session_state.dark_mode = not st.session_state.dark_mode
+
 
 # Custom CSS with dynamic theming
 def apply_theme():
@@ -283,9 +341,15 @@ def apply_theme():
             color: #ffffff !important;
         }
         
-        /* General text colors for light mode */
-        .main, .main * {
-            color: #0a2342 !important;
+        /* General text colors for light mode - FIXED */
+        h1, h2, h3, h4, h5, h6, p, span, div, label {
+            color: #0a2342;
+        }
+        
+        /* Explicitly set text in main content area (but not metric containers) */
+        .main h1, .main h2, .main h3, .main h4, .main h5, .main h6, 
+        .main p, .main span:not([data-testid="stMetricLabel"] *):not([data-testid="stMetricValue"] *) {
+            color: #0a2342;
         }
         
         /* Buttons */
@@ -336,7 +400,9 @@ def apply_theme():
     
     st.markdown(theme_css, unsafe_allow_html=True)
 
+
 apply_theme()
+
 
 # Sidebar: Branding and Home selection
 with st.sidebar:
@@ -359,6 +425,7 @@ with st.sidebar:
     st.markdown("---")
     st.info("💡 Switch homes to view data for each property.")
 
+
 # Enhanced Header with Theme Toggle
 header_col1, header_col2 = st.columns([0.9, 0.1])
 with header_col1:
@@ -380,6 +447,7 @@ with header_col1:
         unsafe_allow_html=True
     )
 
+
 with header_col2:
     # Theme toggle button
     theme_icon = "🌙" if st.session_state.dark_mode else "☀️"
@@ -387,9 +455,11 @@ with header_col2:
         toggle_theme()
         st.rerun()
 
+
 # Tabs
 tab1, tab2, tab3 = st.tabs([
     "🏠 Dashboard", "📊 Scenario Analysis", "🤖 Ask AI (RAG)"])
+
 
 with tab1:
     st.subheader("Real-Time Metrics")
@@ -465,10 +535,12 @@ with tab1:
         forecast_kwh = forecast.get("forecast_kwh")
         start_time = forecast.get("timestamp")
 
+
         # Fallback to defaults when missing
         if not (forecast_kwh and isinstance(forecast_kwh, list) and start_time):
             forecast_kwh = DEFAULTS.get(home_id, {}).get('forecast_kwh')
             start_time = datetime.utcnow().isoformat()
+
 
         if forecast_kwh and isinstance(forecast_kwh, list) and start_time:
             start_dt = pd.to_datetime(start_time)
@@ -489,7 +561,7 @@ with tab1:
                 font=dict(color='#2e86ab' if not st.session_state.dark_mode else '#ffffff'),
                 hovermode='x unified'
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("ℹ️ No forecast data available for this home. Try training the model.")
     except Exception as e:
@@ -502,7 +574,7 @@ with tab1:
     
     col_train1, col_train2, col_train3 = st.columns([1, 1, 2])
     with col_train1:
-        if st.button("🔄 Train Model", key="train_model_btn", width='stretch'):
+        if st.button("🔄 Train Model", key="train_model_btn", use_container_width=True):
             with st.spinner("Training model..."):
                 try:
                     resp = api_post(f"{API_BASE}/train", timeout=60)
@@ -510,6 +582,7 @@ with tab1:
                     st.success(f"✅ Model trained! RMSE={result['metrics']['rmse']:.2f}, MAE={result['metrics']['mae']:.2f}, MAPE={result['metrics']['mape']:.2f}")
                 except Exception as e:
                     st.error(f"❌ Training failed: {e}")
+
 
 with tab2:
     st.subheader("📊 Scenario Analysis")
@@ -563,6 +636,7 @@ with tab2:
                     
             except Exception as e:
                 st.error(f"❌ Scenario evaluation failed: {e}")
+
 
 with tab3:
     st.subheader("🤖 AI-Powered Energy Assistant")
