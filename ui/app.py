@@ -94,10 +94,13 @@ def _demo_forecast(horizon_hours=24):
 
 def _demo_billing(home_id):
     # Simple demo billing: sum of next 24h * rate
-    fc = _demo_forecast(24)["forecast_kwh"]
-    rate = 0.20
-    bill = sum(fc) * rate
-    return {"current_bill": round(bill, 2)}
+        # Prefer per-home default billing when available; otherwise compute from sample forecast
+        if home_id and DEFAULTS.get(home_id) and DEFAULTS[home_id].get("current_bill") is not None:
+            return {"current_bill": DEFAULTS[home_id]["current_bill"]}
+        fc = _demo_forecast(24)["forecast_kwh"]
+        rate = 0.20
+        bill = sum(fc) * rate
+        return {"current_bill": round(bill, 2)}
 
 def _demo_scenario_evaluate(payload):
     # payload expected to contain device_mix and home_id
@@ -127,6 +130,12 @@ def api_post(url, json=None, timeout=10):
     if DEMO_MODE:
         if url.endswith("/predict"):
             horizon = (json or {}).get("horizon_hours", 24)
+            home_id = (json or {}).get("home_id")
+            # Use per-home defaults if present to provide distinct demo data per house
+            if home_id and DEFAULTS.get(home_id) and DEFAULTS[home_id].get("forecast_kwh"):
+                vals = DEFAULTS[home_id]["forecast_kwh"]
+                start_time = datetime.utcnow().isoformat()
+                return DemoResponse({"forecast_kwh": vals[:horizon], "timestamp": start_time})
             return DemoResponse(_demo_forecast(horizon))
         if url.endswith("/train"):
             return DemoResponse({"metrics": {"rmse": 0.5, "mae": 0.3, "mape": 5.2}})
@@ -275,8 +284,8 @@ def apply_theme():
         }
         
         /* General text colors for light mode */
-        .main * {
-            color: #0a2342;
+        .main, .main * {
+            color: #0a2342 !important;
         }
         
         /* Buttons */
