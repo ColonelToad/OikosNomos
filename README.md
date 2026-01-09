@@ -89,3 +89,20 @@ To simulate device data:
 ```bash
 python scripts/replay.py --speed 60x
 ```
+
+**Streamlit Cloud Demo Mode**
+
+If you deploy the UI to Streamlit Cloud but don't host the backend services, enable the demo mode so the app uses bundled sample data:
+
+- In Streamlit Cloud, open your app, go to *Settings → Secrets* and add:
+
+   - `DEMO_MODE=true`
+
+- Alternatively, set the environment variable locally or in your hosting environment:
+
+   - Linux/macOS: `export DEMO_MODE=true`
+   - Windows PowerShell: `$env:DEMO_MODE = "true"`
+
+- The demo UI reads sample CSVs from `data/processed/` and does not require the backend services. It still needs the Python dependencies in `requirements.txt`.
+
+When `DEMO_MODE` is enabled the UI will display canned forecasts, billing and scenario results so others can explore the app without a running backend.

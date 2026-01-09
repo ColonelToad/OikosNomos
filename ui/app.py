@@ -1,13 +1,105 @@
+import os
+from pathlib import Path
+import json
 import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="OikosNomos Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 API_BASE = "http://localhost:8001"
 SCENARIO_API = "http://localhost:8002"
 RAG_API = "http://localhost:8003"
+
+# Demo mode: when True the UI will use bundled sample CSVs instead of calling backends.
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes")
+REPO_ROOT = Path(__file__).parent.parent
+DATA_DIR = REPO_ROOT / "data" / "processed"
+
+class DemoResponse:
+    def __init__(self, data, status_code=200):
+        self._data = data
+        self.status_code = status_code
+        try:
+            self.text = json.dumps(data)
+        except Exception:
+            self.text = str(data)
+
+    def json(self):
+        return self._data
+
+def _load_sample_series():
+    # Load a sample consumption series from the provided CSVs
+    paths = [DATA_DIR / "historical_load_sample.csv", DATA_DIR / "historical_load.csv"]
+    for p in paths:
+        try:
+            df = pd.read_csv(p, parse_dates=["timestamp"])
+            if "consumption_kwh" in df.columns:
+                return df
+        except Exception:
+            continue
+    return None
+
+_SAMPLE_DF = _load_sample_series()
+
+def _demo_forecast(horizon_hours=24):
+    if _SAMPLE_DF is None:
+        vals = [0.5] * horizon_hours
+        start_time = datetime.utcnow().isoformat()
+    else:
+        vals = _SAMPLE_DF["consumption_kwh"].astype(float).tolist()
+        if len(vals) < horizon_hours:
+            vals = vals * ((horizon_hours // max(1, len(vals))) + 1)
+        vals = vals[:horizon_hours]
+        start_time = _SAMPLE_DF["timestamp"].iloc[0].isoformat()
+    return {"forecast_kwh": vals, "timestamp": start_time}
+
+def _demo_billing(home_id):
+    # Simple demo billing: sum of next 24h * rate
+    fc = _demo_forecast(24)["forecast_kwh"]
+    rate = 0.20
+    bill = sum(fc) * rate
+    return {"current_bill": round(bill, 2)}
+
+def _demo_scenario_evaluate(payload):
+    # payload expected to contain device_mix and home_id
+    fc = _demo_forecast(24)["forecast_kwh"]
+    daily_cost = sum(fc) * 0.20
+    monthly_cost = daily_cost * 30
+    return {
+        "monthly_cost": round(monthly_cost, 2),
+        "daily_cost": round(daily_cost, 2),
+        "savings_vs_current": 0.0,
+        "devices_active": payload.get("device_mix", {}),
+    }
+
+def _demo_rag_query(payload):
+    return {"answer": "This is a demo answer — deploy backends for live results.", "citations": []}
+
+def api_get(url, params=None, timeout=5):
+    if DEMO_MODE:
+        if url.endswith("/health"):
+            return DemoResponse({"model_loaded": True, "db_connected": True})
+        if "/billing/current" in url:
+            return DemoResponse(_demo_billing(None))
+        return DemoResponse({})
+    return requests.get(url, params=params, timeout=timeout)
+
+def api_post(url, json=None, timeout=10):
+    if DEMO_MODE:
+        if url.endswith("/predict"):
+            horizon = (json or {}).get("horizon_hours", 24)
+            return DemoResponse(_demo_forecast(horizon))
+        if url.endswith("/train"):
+            return DemoResponse({"metrics": {"rmse": 0.5, "mae": 0.3, "mape": 5.2}})
+        if "/scenario/evaluate" in url:
+            return DemoResponse(_demo_scenario_evaluate(json or {}))
+        if url.endswith("/query"):
+            return DemoResponse(_demo_rag_query(json or {}))
+        return DemoResponse({})
+    return requests.post(url, json=json, timeout=timeout)
 
 # Initialize session state for theme toggle
 if 'dark_mode' not in st.session_state:
@@ -260,7 +352,7 @@ with tab1:
     
     # Backend health check
     try:
-        health = requests.get(f"{API_BASE}/health", timeout=5).json()
+        health = api_get(f"{API_BASE}/health", timeout=5).json()
         model_loaded = health.get("model_loaded", False)
         db_connected = health.get("db_connected", False)
     except Exception:
@@ -269,7 +361,7 @@ with tab1:
     
     # Current billing
     try:
-        resp = requests.get(f"{API_BASE}/billing/current", params={"home_id": home_id}, timeout=5)
+        resp = api_get(f"{API_BASE}/billing/current", params={"home_id": home_id}, timeout=5)
         billing = resp.json()
         bill_val = billing.get('current_bill', None)
         if bill_val is not None and bill_val != 'N/A' and bill_val != 0:
@@ -283,7 +375,7 @@ with tab1:
     
     # Forecast (next 24h)
     try:
-        resp = requests.post(f"{API_BASE}/predict", json={"home_id": home_id, "horizon_hours": 24}, timeout=10)
+        resp = api_post(f"{API_BASE}/predict", json={"home_id": home_id, "horizon_hours": 24}, timeout=10)
         forecast = resp.json()
         forecast_kwh = forecast.get("forecast_kwh")
         if forecast_kwh and isinstance(forecast_kwh, list) and sum(forecast_kwh[:24]) > 0:
@@ -307,7 +399,7 @@ with tab1:
     
     st.subheader("📈 Energy Consumption Forecast")
     try:
-        resp = requests.post(f"{API_BASE}/predict", json={"home_id": home_id, "horizon_hours": 24}, timeout=10)
+        resp = api_post(f"{API_BASE}/predict", json={"home_id": home_id, "horizon_hours": 24}, timeout=10)
         forecast = resp.json()
         forecast_kwh = forecast.get("forecast_kwh")
         start_time = forecast.get("timestamp")
@@ -348,7 +440,7 @@ with tab1:
         if st.button("🔄 Train Model", key="train_model_btn", width='stretch'):
             with st.spinner("Training model..."):
                 try:
-                    resp = requests.post(f"{API_BASE}/train", timeout=60)
+                    resp = api_post(f"{API_BASE}/train", timeout=60)
                     result = resp.json()
                     st.success(f"✅ Model trained! RMSE={result['metrics']['rmse']:.2f}, MAE={result['metrics']['mae']:.2f}, MAPE={result['metrics']['mape']:.2f}")
                 except Exception as e:
@@ -387,7 +479,8 @@ with tab2:
                     "name": scenario_name,
                     "device_mix": device_mix
                 }
-                resp = requests.post(f"{SCENARIO_API}/scenario/evaluate", json=payload, timeout=20)
+                resp = api_post(f"{SCENARIO_API}/scenario/evaluate", json=payload, timeout=20)
+                
                 if resp.status_code == 200:
                     result = resp.json()
                     
@@ -402,6 +495,7 @@ with tab2:
                         st.json(result.get("devices_active", {}))
                 else:
                     st.error(f"❌ Scenario evaluation failed: {resp.text}")
+                    
             except Exception as e:
                 st.error(f"❌ Scenario evaluation failed: {e}")
 
@@ -415,7 +509,8 @@ with tab3:
         with st.spinner("Getting answer from AI..."):
             try:
                 payload = {"question": question, "home_id": home_id, "include_citations": True}
-                resp = requests.post(f"{RAG_API}/query", json=payload, timeout=30)
+                resp = api_post(f"{RAG_API}/query", json=payload, timeout=30)
+                
                 if resp.status_code == 200:
                     result = resp.json()
                     
@@ -430,5 +525,6 @@ with tab3:
                                 st.markdown("---")
                 else:
                     st.error(f"❌ RAG query failed: {resp.text}")
+                    
             except Exception as e:
                 st.error(f"❌ RAG query failed: {e}")
