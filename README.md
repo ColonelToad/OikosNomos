@@ -4,7 +4,7 @@ A realistic end-to-end system for modeling the cost and environmental impact of 
 
 ## Try the App Online
 
-[Check it out here (Streamlit Cloud)](https://share.streamlit.io/your-org/oikosnomos/main/ui/app.py)
+[Check it out here](https://share.streamlit.io/your-org/oikosnomos/main/ui/app.py)
 
 ## Overview
 
